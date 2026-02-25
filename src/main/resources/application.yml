@@ -1,0 +1,27 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/lifelog
+    username: lifelog
+    password: lifelog
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        format_sql: true
+    open-in-view: false
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+
+app:
+  jwt:
+    # 32 bytes 이상 권장. 운영에서는 반드시 환경변수/시크릿 매니저 사용
+    secret: "change-this-to-a-long-random-secret-key-at-least-32-bytes"
+    access-token-expiry-seconds: 3600

@@ -1,0 +1,15 @@
+version: '3.9'
+services:
+  postgres:
+    image: postgres:16
+    container_name: lifelog-postgres
+    environment:
+      POSTGRES_DB: lifelog
+      POSTGRES_USER: lifelog
+      POSTGRES_PASSWORD: lifelog
+    ports:
+      - "5432:5432"
+    volumes:
+      - lifelog_pg_data:/var/lib/postgresql/data
+volumes:
+  lifelog_pg_data:

@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Lifelog MVP</title>
+  <style>
+    body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; margin: 20px; background:#f7f7f9; color:#222; }
+    h1 { margin-bottom: 8px; }
+    .grid { display:grid; grid-template-columns: repeat(auto-fit,minmax(320px,1fr)); gap:16px; }
+    .card { background:white; border-radius:12px; padding:14px; box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+    label { display:block; font-size:13px; margin-top:8px; }
+    input, textarea, button { width:100%; box-sizing:border-box; padding:8px; margin-top:4px; }
+    button { cursor:pointer; border:0; border-radius:8px; background:#1f6feb; color:white; font-weight:600; }
+    button.secondary { background:#666; }
+    pre { background:#0f172a; color:#e2e8f0; padding:10px; border-radius:8px; overflow:auto; max-height:280px; }
+    .row { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+    .muted { color:#666; font-size:12px; }
+  </style>
+</head>
+<body>
+  <h1>생활데이터 MVP 대시보드</h1>
+  <div class="muted">영수증 업로드 / 가계부 / 재고 / 레시피 / 추천 조회</div>
+
+  <div class="grid" style="margin-top:14px;">
+    <section class="card">
+      <h3>영수증 업로드</h3>
+      <form id="uploadForm">
+        <label>영수증 이미지</label>
+        <input type="file" name="file" required />
+        <label>총액</label>
+        <input type="number" name="totalAmount" value="0" required />
+        <label>카테고리</label>
+        <input type="text" name="category" value="식재료" />
+        <label>품목명(초기 MVP: 1개)</label>
+        <input type="text" name="itemName" placeholder="예: 계란" />
+        <button type="submit">업로드</button>
+      </form>
+      <pre id="uploadOut"></pre>
+    </section>
+
+    <section class="card">
+      <h3>영수증 조회/확정</h3>
+      <label>Receipt ID</label>
+      <input id="receiptId" type="number" placeholder="예: 1" />
+      <div class="row">
+        <button id="getReceipt">상세 조회</button>
+        <button id="confirmReceipt" class="secondary">확정 처리</button>
+      </div>
+      <pre id="receiptOut"></pre>
+    </section>
+
+    <section class="card">
+      <h3>레시피 등록</h3>
+      <form id="recipeForm">
+        <label>제목</label>
+        <input name="title" required />
+        <label>필요 재료(CSV)</label>
+        <input name="requiredItems" placeholder="계란,밥,파" required />
+        <label>조리법</label>
+        <textarea name="instructions" rows="4"></textarea>
+        <button type="submit">레시피 저장</button>
+      </form>
+      <pre id="recipeOut"></pre>
+    </section>
+
+    <section class="card">
+      <h3>월간 지출 요약</h3>
+      <div class="row">
+        <div>
+          <label>연도</label>
+          <input id="year" type="number" value="2026" />
+        </div>
+        <div>
+          <label>월</label>
+          <input id="month" type="number" value="2" />
+        </div>
+      </div>
+      <button id="monthlyBtn">요약 조회</button>
+      <pre id="monthlyOut"></pre>
+    </section>
+
+    <section class="card">
+      <h3>빠른 조회</h3>
+      <div class="row">
+        <button id="expensesBtn">지출 목록</button>
+        <button id="inventoryBtn">재고 목록</button>
+      </div>
+      <button id="recommendBtn" style="margin-top:8px;">오늘의 추천</button>
+      <pre id="quickOut"></pre>
+    </section>
+  </div>
+
+  <script>
+    const pretty = (obj) => JSON.stringify(obj, null, 2);
+    async function api(url, options = {}) {
+      const res = await fetch(url, options);
+      const text = await res.text();
+      try { return { ok: res.ok, data: JSON.parse(text) }; }
+      catch { return { ok: res.ok, data: text }; }
+    }
+
+    document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const out = document.getElementById('uploadOut');
+      const form = new FormData(e.target);
+      const r = await api('/api/receipts/upload', { method: 'POST', body: form });
+      out.textContent = pretty(r);
+    });
+
+    document.getElementById('getReceipt').addEventListener('click', async () => {
+      const id = document.getElementById('receiptId').value;
+      const out = document.getElementById('receiptOut');
+      if (!id) return out.textContent = 'receiptId 입력 필요';
+      const r = await api(`/api/receipts/${id}`);
+      out.textContent = pretty(r);
+    });
+
+    document.getElementById('confirmReceipt').addEventListener('click', async () => {
+      const id = document.getElementById('receiptId').value;
+      const out = document.getElementById('receiptOut');
+      if (!id) return out.textContent = 'receiptId 입력 필요';
+      const r = await api(`/api/receipts/${id}/confirm`, { method: 'PUT' });
+      out.textContent = pretty(r);
+    });
+
+    document.getElementById('recipeForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const out = document.getElementById('recipeOut');
+      const f = new FormData(e.target);
+      const payload = {
+        title: f.get('title'),
+        requiredItems: f.get('requiredItems'),
+        instructions: f.get('instructions')
+      };
+      const r = await api('/api/recipes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      out.textContent = pretty(r);
+    });
+
+    document.getElementById('monthlyBtn').addEventListener('click', async () => {
+      const y = document.getElementById('year').value;
+      const m = document.getElementById('month').value;
+      const out = document.getElementById('monthlyOut');
+      const r = await api(`/api/expenses/summary/monthly?year=${y}&month=${m}`);
+      out.textContent = pretty(r);
+    });
+
+    document.getElementById('expensesBtn').addEventListener('click', async () => {
+      const r = await api('/api/expenses');
+      document.getElementById('quickOut').textContent = pretty(r);
+    });
+    document.getElementById('inventoryBtn').addEventListener('click', async () => {
+      const r = await api('/api/inventory/stocks');
+      document.getElementById('quickOut').textContent = pretty(r);
+    });
+    document.getElementById('recommendBtn').addEventListener('click', async () => {
+      const r = await api('/api/recommendations/today');
+      document.getElementById('quickOut').textContent = pretty(r);
+    });
+  </script>
+</body>
+</html>
