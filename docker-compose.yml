@@ -11,5 +11,68 @@ services:
       - "5432:5432"
     volumes:
       - lifelog_pg_data:/var/lib/postgresql/data
+
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.2.15
+    container_name: lifelog-redpanda
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp
+      - "1"
+      - --memory
+      - "1G"
+      - --reserve-memory
+      - "0M"
+      - --node-id
+      - "0"
+      - --check=false
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:9092,OUTSIDE://0.0.0.0:19092
+      - --advertise-kafka-addr
+      - PLAINTEXT://redpanda:9092,OUTSIDE://localhost:19092
+      - --pandaproxy-addr
+      - 0.0.0.0:8082
+      - --advertise-pandaproxy-addr
+      - localhost:8082
+    ports:
+      - "19092:19092"
+      - "18082:8082"
+    volumes:
+      - lifelog_rp_data:/var/lib/redpanda/data
+
+  redpanda-console:
+    image: docker.redpanda.com/redpandadata/console:v2.8.2
+    container_name: lifelog-redpanda-console
+    depends_on:
+      - redpanda
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "18081:8080"
+
+  ocr-worker:
+    build:
+      context: ../lifelog-ocr-worker
+    container_name: lifelog-ocr-worker
+    depends_on:
+      - redpanda
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      OCR_REQUESTED_TOPIC: ocr.requested
+      OCR_COMPLETED_TOPIC: ocr.completed
+      OCR_FAILED_TOPIC: ocr.failed
+      OCR_WORKER_GROUP: lifelog-ocr-worker
+      OCR_RETRY_COUNT: 3
+      OCR_MOCK_MODE: true
+      OCR_UPLOADS_ROOT: /workspace/uploads
+    volumes:
+      - ./uploads:/workspace/uploads:ro
+      - ../lifelog-ocr-worker/data:/app/data
+    ports:
+      - "8090:8090"
+
 volumes:
   lifelog_pg_data:
+  lifelog_rp_data:

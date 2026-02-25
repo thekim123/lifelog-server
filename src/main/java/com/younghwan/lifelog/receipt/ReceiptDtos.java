@@ -25,14 +25,47 @@ public class ReceiptDtos {
             BigDecimal totalPrice
     ) {}
 
+    public record ReceiptSummaryResponse(
+            Long receiptId,
+            Long householdId,
+            String householdName,
+            String uploadedBy,
+            String storeName,
+            BigDecimal totalAmount,
+            LocalDateTime purchasedAt,
+            boolean confirmed,
+            int itemCount,
+            OcrStatus ocrStatus,
+            String ocrRequestId,
+            String ocrError,
+            LocalDateTime lastOcrAt
+    ) {}
+
     public record ReceiptDetailResponse(
             Long receiptId,
+            Long householdId,
+            String householdName,
+            String uploadedBy,
             String storeName,
             BigDecimal totalAmount,
             LocalDateTime purchasedAt,
             boolean confirmed,
             List<ReceiptItemResponse> items,
-            String rawOcrText
+            String rawOcrText,
+            OcrStatus ocrStatus,
+            String ocrRequestId,
+            String ocrError,
+            LocalDateTime lastOcrAt
+    ) {}
+
+    public record ReceiptUploadResponse(
+            Long receiptId,
+            Long householdId,
+            String householdName,
+            String message,
+            int itemCount,
+            OcrStatus ocrStatus,
+            String ocrRequestId
     ) {}
 
     public record ReceiptConfirmRequest(

@@ -1,6 +1,8 @@
 package com.younghwan.lifelog.receipt;
 
+import com.younghwan.lifelog.auth.UserAccount;
 import com.younghwan.lifelog.common.BaseEntity;
+import com.younghwan.lifelog.household.Household;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -32,8 +34,28 @@ public class Receipt extends BaseEntity {
     private String imagePath;
 
     @Builder.Default
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private OcrStatus ocrStatus = OcrStatus.PENDING;
+
+    private String ocrRequestId;
+
+    @Lob
+    private String ocrError;
+
+    private LocalDateTime lastOcrAt;
+
+    @Builder.Default
     @Column(nullable = false)
     private boolean confirmed = false;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "household_id")
+    private Household household;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "uploaded_by_user_id")
+    private UserAccount uploadedBy;
 
     @OneToMany(mappedBy = "receipt", cascade = CascadeType.ALL, orphanRemoval = true)
     @Builder.Default

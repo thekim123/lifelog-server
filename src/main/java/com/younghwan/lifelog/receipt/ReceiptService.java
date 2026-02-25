@@ -3,10 +3,11 @@ package com.younghwan.lifelog.receipt;
 import com.younghwan.lifelog.catalog.ItemNormalizationService;
 import com.younghwan.lifelog.expense.ExpenseEntry;
 import com.younghwan.lifelog.expense.ExpenseRepository;
+import com.younghwan.lifelog.household.HouseholdMember;
+import com.younghwan.lifelog.household.HouseholdRole;
+import com.younghwan.lifelog.household.HouseholdService;
 import com.younghwan.lifelog.inventory.*;
 import com.younghwan.lifelog.receipt.ReceiptDtos.*;
-import com.younghwan.lifelog.receipt.ocr.OcrProvider;
-import com.younghwan.lifelog.receipt.ocr.OcrResult;
 import jakarta.persistence.EntityNotFoundException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -21,7 +22,7 @@ import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
+import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
@@ -30,31 +31,44 @@ public class ReceiptService {
     private final ExpenseRepository expenseRepository;
     private final InventoryRepository inventoryRepository;
     private final InventoryTransactionRepository inventoryTransactionRepository;
-    private final OcrProvider ocrProvider;
     private final ItemNormalizationService itemNormalizationService;
+    private final HouseholdService householdService;
+    private final ReceiptEventPublisher receiptEventPublisher;
 
     @Transactional
-    public Map<String, Object> upload(MultipartFile file,
-                                      BigDecimal totalAmount,
-                                      String category,
-                                      List<String> itemNames,
-                                      List<BigDecimal> itemQuantities,
-                                      List<String> itemUnits,
-                                      List<BigDecimal> itemPrices) throws IOException {
+    public ReceiptUploadResponse upload(Long householdId,
+                                        MultipartFile file,
+                                        BigDecimal totalAmount,
+                                        String category,
+                                        List<String> itemNames,
+                                        List<BigDecimal> itemQuantities,
+                                        List<String> itemUnits,
+                                        List<BigDecimal> itemPrices) throws IOException {
+        Long currentUserId = householdService.currentUserId();
+        HouseholdMember member = householdService.requireMembership(householdId, currentUserId);
+        if (member.getRole() == HouseholdRole.VIEWER) {
+            throw new IllegalArgumentException("No permission to upload in this household");
+        }
+
         Path dir = Paths.get("uploads");
         Files.createDirectories(dir);
         Path target = dir.resolve(System.currentTimeMillis() + "_" + file.getOriginalFilename());
         file.transferTo(target);
 
-        OcrResult ocr = ocrProvider.extract(file);
         List<ReceiptItemRequest> parsedItems = parseItems(itemNames, itemQuantities, itemUnits, itemPrices);
+        String requestId = UUID.randomUUID().toString();
 
         Receipt receipt = Receipt.builder()
-                .storeName(ocr.storeName() == null ? "UNKNOWN" : ocr.storeName())
-                .totalAmount(zeroIfNull(totalAmount).compareTo(BigDecimal.ZERO) > 0 ? totalAmount : zeroIfNull(ocr.totalAmount()))
-                .purchasedAt(ocr.purchasedAt() == null ? LocalDateTime.now() : ocr.purchasedAt())
-                .rawOcrText(ocr.rawText())
+                .household(member.getHousehold())
+                .uploadedBy(member.getUser())
+                .storeName("UNKNOWN")
+                .totalAmount(zeroIfNull(totalAmount))
+                .purchasedAt(LocalDateTime.now())
                 .imagePath(target.toString())
+                .ocrStatus(OcrStatus.PROCESSING)
+                .ocrRequestId(requestId)
+                .ocrError(null)
+                .lastOcrAt(LocalDateTime.now())
                 .confirmed(false)
                 .items(new ArrayList<>())
                 .build();
@@ -77,7 +91,7 @@ public class ReceiptService {
         expenseRepository.save(ExpenseEntry.builder()
                 .category(category == null || category.isBlank() ? "미분류" : category)
                 .amount(receipt.getTotalAmount())
-                .memo("receiptId=" + receipt.getId())
+                .memo("receiptId=" + receipt.getId() + ",householdId=" + householdId)
                 .spentAt(receipt.getPurchasedAt())
                 .build());
 
@@ -85,26 +99,87 @@ public class ReceiptService {
             applyInventory(item, "IN", "RECEIPT_UPLOAD");
         }
 
-        return Map.of("receiptId", receipt.getId(), "message", "uploaded", "itemCount", receipt.getItems().size());
+        boolean published = receiptEventPublisher.publishOcrRequested(receipt);
+        if (!published) {
+            receipt.setOcrStatus(OcrStatus.PENDING);
+            receipt.setOcrError("OCR request publish failed. retry required.");
+        }
+
+        return new ReceiptUploadResponse(
+                receipt.getId(),
+                householdId,
+                member.getHousehold().getName(),
+                "uploaded",
+                receipt.getItems().size(),
+                receipt.getOcrStatus(),
+                receipt.getOcrRequestId()
+        );
+    }
+
+    @Transactional(readOnly = true)
+    public List<ReceiptSummaryResponse> list(Long householdId) {
+        ensureAccess(householdId);
+
+        return receiptRepository.findByHouseholdIdOrderByPurchasedAtDesc(householdId).stream()
+                .map(r -> new ReceiptSummaryResponse(
+                        r.getId(),
+                        r.getHousehold() == null ? null : r.getHousehold().getId(),
+                        r.getHousehold() == null ? null : r.getHousehold().getName(),
+                        r.getUploadedBy() == null ? null : r.getUploadedBy().getUsername(),
+                        r.getStoreName(),
+                        r.getTotalAmount(),
+                        r.getPurchasedAt(),
+                        r.isConfirmed(),
+                        r.getItems() == null ? 0 : r.getItems().size(),
+                        r.getOcrStatus(),
+                        r.getOcrRequestId(),
+                        r.getOcrError(),
+                        r.getLastOcrAt()
+                ))
+                .toList();
     }
 
     @Transactional(readOnly = true)
     public ReceiptDetailResponse detail(Long receiptId) {
         Receipt receipt = receiptRepository.findById(receiptId)
                 .orElseThrow(() -> new EntityNotFoundException("receipt not found: " + receiptId));
+        if (receipt.getHousehold() != null) {
+            ensureAccess(receipt.getHousehold().getId());
+        }
 
         List<ReceiptItemResponse> items = receipt.getItems().stream()
                 .map(i -> new ReceiptItemResponse(i.getId(), i.getItemName(), i.getQuantity(), i.getUnit(), i.getUnitPrice(), i.getTotalPrice()))
                 .toList();
 
-        return new ReceiptDetailResponse(receipt.getId(), receipt.getStoreName(), receipt.getTotalAmount(),
-                receipt.getPurchasedAt(), receipt.isConfirmed(), items, receipt.getRawOcrText());
+        return new ReceiptDetailResponse(
+                receipt.getId(),
+                receipt.getHousehold() == null ? null : receipt.getHousehold().getId(),
+                receipt.getHousehold() == null ? null : receipt.getHousehold().getName(),
+                receipt.getUploadedBy() == null ? null : receipt.getUploadedBy().getUsername(),
+                receipt.getStoreName(),
+                receipt.getTotalAmount(),
+                receipt.getPurchasedAt(),
+                receipt.isConfirmed(),
+                items,
+                receipt.getRawOcrText(),
+                receipt.getOcrStatus(),
+                receipt.getOcrRequestId(),
+                receipt.getOcrError(),
+                receipt.getLastOcrAt()
+        );
     }
 
     @Transactional
     public ReceiptDetailResponse confirm(Long receiptId, ReceiptConfirmRequest req) {
         Receipt receipt = receiptRepository.findById(receiptId)
                 .orElseThrow(() -> new EntityNotFoundException("receipt not found: " + receiptId));
+
+        if (receipt.getHousehold() != null) {
+            HouseholdMember member = householdService.requireMembership(receipt.getHousehold().getId(), householdService.currentUserId());
+            if (member.getRole() == HouseholdRole.VIEWER) {
+                throw new IllegalArgumentException("No permission to confirm in this household");
+            }
+        }
 
         if (req.storeName() != null) receipt.setStoreName(req.storeName());
         if (req.totalAmount() != null) receipt.setTotalAmount(req.totalAmount());
@@ -130,6 +205,38 @@ public class ReceiptService {
         receipt.setConfirmed(true);
         receiptRepository.save(receipt);
         return detail(receiptId);
+    }
+
+    @Transactional
+    public ReceiptDetailResponse retryOcr(Long receiptId) {
+        Receipt receipt = receiptRepository.findById(receiptId)
+                .orElseThrow(() -> new EntityNotFoundException("receipt not found: " + receiptId));
+
+        if (receipt.getHousehold() != null) {
+            HouseholdMember member = householdService.requireMembership(receipt.getHousehold().getId(), householdService.currentUserId());
+            if (member.getRole() == HouseholdRole.VIEWER) {
+                throw new IllegalArgumentException("No permission to retry OCR in this household");
+            }
+        }
+
+        receipt.setOcrStatus(OcrStatus.PROCESSING);
+        receipt.setOcrError(null);
+        receipt.setOcrRequestId(UUID.randomUUID().toString());
+        receipt.setLastOcrAt(LocalDateTime.now());
+        receiptRepository.save(receipt);
+
+        boolean published = receiptEventPublisher.publishOcrRequested(receipt);
+        if (!published) {
+            receipt.setOcrStatus(OcrStatus.PENDING);
+            receipt.setOcrError("OCR request publish failed. retry required.");
+            receiptRepository.save(receipt);
+        }
+
+        return detail(receiptId);
+    }
+
+    private void ensureAccess(Long householdId) {
+        householdService.requireMembership(householdId, householdService.currentUserId());
     }
 
     private void applyInventory(ReceiptItem item, String txType, String reason) {
